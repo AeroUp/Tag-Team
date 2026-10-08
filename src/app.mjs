@@ -14,8 +14,8 @@ export const APP_HOME = process.env.TAGTEAM_HOME || path.join(os.homedir(), '.ta
 
 export const DEFAULTS = {
   images: {
-    engine: 'auto', // auto | codex | gemini
-    critics: ['claude', 'gemini', 'codex'],
+    engine: 'auto', // auto (codex → antigravity → gemini) | codex | antigravity | gemini (API key)
+    critics: ['claude', 'antigravity', 'codex'],
     out_dir: 'tagteam-images',
     gemini_image_model: null, // auto-discovered when null
     gemini_vision_model: null,

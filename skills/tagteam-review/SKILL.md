@@ -1,6 +1,6 @@
 ---
 name: tagteam-review
-description: Cross-AI code review. Have Codex, Claude and/or Gemini independently review uncommitted changes, a branch, the last commit or specific files, then merge, verify and apply their findings. Use when the user asks for a review "from another AI", a "second pair of eyes", "have codex/gemini check this", "multi-model review", or before shipping/committing important changes.
+description: Cross-AI code review. Have Codex, Claude and/or Antigravity independently review uncommitted changes, a branch, the last commit or specific files, then merge, verify and apply their findings. Use when the user asks for a review "from another AI", a "second pair of eyes", "have codex/antigravity check this", "multi-model review", or before shipping/committing important changes.
 ---
 
 # Tag-Team review: several AIs, one verified list
@@ -16,7 +16,7 @@ Different models catch different bugs. Run independent reviews in parallel and t
    - `last_commit`: the most recent commit.
    - `files`: specific files. Use this for code that isn't in git.
 2. **Call `review`.** Pass `cwd` (absolute) and the `scope`. Add `focus` (e.g. "auth and input validation") and `context`: what the change is supposed to do. Reviewers judge much better when they know the intent.
-   - By default every installed agent except you reviews. Pass `agents` to choose, for example `["codex","gemini"]` when you're Claude.
+   - By default every installed agent except you reviews. Pass `agents` to choose, for example `["codex","antigravity"]` when you're Claude.
    - Large diffs can take several minutes. Pass `background: true`, then use `job` with `wait_sec: 600`.
 3. **Read the merged findings.** Issues flagged by two or more reviewers come first, and they're the most likely to be real.
 4. **Verify every finding yourself** before acting on it. Open the file and trace the failure scenario. Drop false positives and say why.
@@ -25,6 +25,6 @@ Different models catch different bugs. Run independent reviews in parallel and t
 ## Tips
 
 - Run a second round on the fixed code for high-stakes changes: auth, payments, migrations, concurrency.
-- When you're Codex or Gemini, Claude is usually the most thorough reviewer. When you're Claude, Codex is good at spotting runtime and test failures.
+- When you're Codex or Antigravity, Claude is usually the most thorough reviewer. When you're Claude, Codex is good at spotting runtime and test failures.
 - Reviewers work read-only. They never modify files.
 - CLI: `{{CLI}} review --cwd <dir> --scope branch --base main --focus "error handling"`.

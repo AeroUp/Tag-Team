@@ -2,7 +2,7 @@
 import path from 'node:path';
 import { ENV, fmtTime, fmtIn, gitInfo, extractJSON } from './core/util.mjs';
 import { loadConfig } from './core/config.mjs';
-import { AGENTS, LABEL, resolveAgent, runAgent, depth } from './core/agents.mjs';
+import { AGENTS, LABEL, resolveAgent, runAgent, depth, normAgent, installHint } from './core/agents.mjs';
 import { limitedUntil, codexUsage, getLimits } from './core/limits.mjs';
 import { acquireSlot, startJob, listJobs } from './core/jobs.mjs';
 import { imagine, critique, studio, geminiKey } from './images.mjs';
@@ -14,7 +14,6 @@ export function detectCaller() {
   const e = process.env;
   if (e[ENV.SELF]) return e[ENV.SELF];
   if (e.CLAUDECODE || e.CLAUDE_CODE_ENTRYPOINT) return 'claude';
-  if (e.GEMINI_CLI) return 'gemini';
   return null;
 }
 
@@ -31,13 +30,13 @@ export async function ask(p, ctx = {}) {
   guard();
   if (!p.prompt?.trim()) return { ok: false, error: 'prompt is required' };
   const caller = p.from || detectCaller();
-  const pool = ['codex', 'claude', 'gemini'];
-  let order = p.agent && p.agent !== 'auto' ? [p.agent] : pool.filter((a) => a !== caller);
+  const pool = ['codex', 'claude', 'antigravity'];
+  let order = p.agent && p.agent !== 'auto' ? [normAgent(p.agent)] : pool.filter((a) => a !== caller);
   if (p.fallback) order = [...order, ...pool.filter((a) => !order.includes(a) && a !== caller)];
   const skipped = [];
   for (const agent of order) {
     if (!AGENTS.includes(agent)) { skipped.push(`${agent}: unknown agent`); continue; }
-    if (!resolveAgent(agent)) { skipped.push(`${agent}: not installed`); continue; }
+    if (!resolveAgent(agent)) { skipped.push(`${agent}: not installed${order.length === 1 ? `. ${installHint(agent)}` : ''}`); continue; }
     const lu = limitedUntil(agent);
     if (lu) { skipped.push(`${agent}: usage-limited until ${fmtTime(lu)}`); continue; }
     const release = acquireSlot();
@@ -61,7 +60,7 @@ export async function ask(p, ctx = {}) {
 export async function council(p, ctx = {}) {
   guard();
   const caller = p.from || detectCaller();
-  const agents = (p.agents?.length ? p.agents : AGENTS.filter((a) => a !== caller)).filter((a) => resolveAgent(a));
+  const agents = [...new Set((p.agents?.length ? p.agents.map(normAgent) : AGENTS.filter((a) => a !== caller)))].filter((a) => resolveAgent(a));
   if (!agents.length) return { ok: false, error: 'No other agents are installed.' };
   const results = await Promise.all(agents.map((agent) => ask({ ...p, agent, fallback: false }, ctx).catch((e) => ({ agent, ok: false, error: e.message }))));
   return { ok: results.some((r) => r.ok), results };
@@ -136,7 +135,7 @@ export async function status() {
     caller: detectCaller(),
     depth: depth(),
     agents,
-    image_engines: { codex: !!resolveAgent('codex'), gemini_api: !!geminiKey() },
+    image_engines: { codex: !!resolveAgent('codex'), antigravity: !!resolveAgent('antigravity'), gemini_api: !!geminiKey() },
     jobs: listJobs(8).map((j) => ({ id: j.id, title: j.title, status: j.status, created: fmtTime(j.created_at) })),
   };
 }

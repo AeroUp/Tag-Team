@@ -5,7 +5,8 @@ import { getJob, listJobs, cancelJob, waitJob, readJobLog, isTerminal } from './
 import { ask, council, review, status, startBackground, detectCaller } from './ops.mjs';
 import { imagine, critique, studio } from './images.mjs';
 
-const AGENT_ENUM = ['claude', 'codex', 'gemini'];
+const AGENT_ENUM = ['claude', 'codex', 'antigravity'];
+const ENGINE_ENUM = ['auto', 'codex', 'antigravity', 'gemini'];
 const ACCESS = {
   type: 'string', enum: ['read', 'write', 'full'],
   description: 'read = look only (default). write = may edit files in cwd (Codex: workspace sandbox). full = no sandbox / no permission checks; only when the user wants it.',
@@ -16,13 +17,13 @@ const CWD = { type: 'string', description: 'Absolute working directory (the proj
 export const TOOLS = [
   {
     name: 'agents',
-    description: 'Who is available right now: which AI agents (claude, codex, gemini) are installed, which are usage-limited and until when, Codex usage %, image engines, and recent jobs. Call before delegating.',
+    description: 'Who is available right now: which AI agents (claude, codex, antigravity) are installed, which are usage-limited and until when, Codex usage %, image engines, and recent jobs. Call before delegating.',
     inputSchema: { type: 'object', properties: {} },
     annotations: { readOnlyHint: true },
   },
   {
     name: 'ask',
-    description: 'Send a prompt to another AI agent (Claude Code, Codex CLI or Gemini CLI) running headless in a directory, and get its answer. Use for second opinions, delegating a subtask, research, or having another model do work. The other agent cannot see this conversation, so include all the context it needs. Returns a session_id you can pass back to continue the same conversation.',
+    description: 'Send a prompt to another AI agent (Claude Code, Codex CLI or Antigravity CLI) running headless in a directory, and get its answer. Use for second opinions, delegating a subtask, research, or having another model do work. The other agent cannot see this conversation, so include all the context it needs. Returns a session_id you can pass back to continue the same conversation.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -74,12 +75,12 @@ export const TOOLS = [
   },
   {
     name: 'imagine',
-    description: 'Generate image(s). engine "codex" uses Codex\'s built-in image_gen (ChatGPT plan, no API key); "gemini" uses Gemini\'s image model (needs a Gemini API key); "auto" tries Codex then Gemini. Returns saved file paths. View them with your own image/file reader, or call "critique".',
+    description: 'Generate image(s). engine "codex" uses Codex\'s built-in image_gen (ChatGPT plan, no API key); "antigravity" asks the Antigravity CLI agent to draw with its built-in image tool; "gemini" calls Gemini\'s image model directly (needs a Gemini API key); "auto" tries them in that order. Returns saved file paths. View them with your own image/file reader, or call "critique".',
     inputSchema: {
       type: 'object',
       properties: {
         prompt: { type: 'string', description: 'Detailed brief: subject, style, composition, lighting, palette, exact text, things to avoid.' },
-        engine: { type: 'string', enum: ['auto', 'codex', 'gemini'] },
+        engine: { type: 'string', enum: ENGINE_ENUM },
         cwd: CWD,
         out_dir: { type: 'string', description: 'Output folder, relative to cwd. Default tagteam-images.' },
         name: { type: 'string', description: 'File name stem.' },
@@ -93,7 +94,7 @@ export const TOOLS = [
   },
   {
     name: 'critique',
-    description: 'Have other AIs (Claude, Gemini, Codex) critique image(s) against a brief. Each returns a 0-10 score, strengths, issues with fixes, and a revised prompt.',
+    description: 'Have other AIs (Claude, Antigravity, Codex) critique image(s) against a brief. Each returns a 0-10 score, strengths, issues with fixes, and a revised prompt.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -113,7 +114,7 @@ export const TOOLS = [
       type: 'object',
       properties: {
         brief: { type: 'string' },
-        engine: { type: 'string', enum: ['auto', 'codex', 'gemini'] },
+        engine: { type: 'string', enum: ENGINE_ENUM },
         critics: { type: 'array', items: { type: 'string', enum: AGENT_ENUM } },
         rounds: { type: 'number', description: '1-5, default 2.' },
         target_score: { type: 'number', description: 'Stop early at this average score. Default 8.' },
@@ -141,7 +142,7 @@ export const TOOLS = [
   },
 ];
 
-export const instructions = () => `Tag-Team connects you (${detectCaller() || 'this agent'}) with the other AI coding agents on this machine: Claude Code, Codex and Gemini. `
+export const instructions = () => `Tag-Team connects you (${detectCaller() || 'this agent'}) with the other AI coding agents on this machine: Claude Code, Codex and Antigravity. `
   + 'ask/council: answers or delegated work from them. review: independent multi-AI code review. imagine/critique/studio: image generation with AI critique loops. '
   + 'Always pass cwd. The other agents cannot see this conversation, so give them full context. Slow work: background:true, then the "job" tool.';
 
@@ -217,7 +218,7 @@ export async function call(name, a, ctx) {
     const ag = s.agents.map((x) => `- ${LABEL[x.agent]}: ${!x.installed ? 'not installed' : x.available ? 'available' : `usage-limited until ${fmtTime(x.limited_until)} (${fmtIn(x.limited_until)})`}`
       + (x.usage ? ` · Codex usage 5h ${x.usage.five_hour_used_pct ?? '?'}% (resets ${x.usage.five_hour_resets}), week ${x.usage.weekly_used_pct ?? '?'}% (resets ${x.usage.weekly_resets}), as of ${x.usage.as_of}` : '')).join('\n');
     return `You are: ${s.caller || 'unknown'} (depth ${s.depth})\nAgents:\n${ag}\n`
-      + `Image engines: codex ${s.image_engines.codex ? 'yes' : 'no'}, gemini API ${s.image_engines.gemini_api ? 'yes' : 'no (no key)'}\n`
+      + `Image engines: codex ${s.image_engines.codex ? 'yes' : 'no'}, antigravity ${s.image_engines.antigravity ? 'yes' : 'no'}, gemini API ${s.image_engines.gemini_api ? 'yes' : 'no (no key)'}\n`
       + `Recent jobs:\n${s.jobs.map((j) => `- ${j.id} ${j.title} [${j.status}] ${j.created}`).join('\n') || '- none'}`;
   }
   if (name === 'job') {

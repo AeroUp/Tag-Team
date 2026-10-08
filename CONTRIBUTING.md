@@ -21,7 +21,7 @@ src/app.mjs          Tag-Team's identity and default config
 src/ops.mjs          ask / council / review / status
 src/images.mjs       imagine / critique / studio
 src/tools.mjs        MCP tool definitions and output formatting
-src/install.mjs      wiring into Claude Code, Codex, Gemini CLI, Antigravity
+src/install.mjs      wiring into Claude Code, Codex, Antigravity (IDE + agy CLI)
 src/core/            shared with Relay (see below)
 skills/              Agent Skills (SKILL.md) installed into each agent
 test/selftest.mjs    offline tests

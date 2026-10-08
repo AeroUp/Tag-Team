@@ -1,5 +1,5 @@
-// Building blocks for wiring an MCP server + skills into Claude Code, Codex,
-// Gemini CLI and Antigravity. Every config file is backed up before it changes.
+// Building blocks for wiring an MCP server + skills into Claude Code, Codex and
+// Antigravity (IDE + agy CLI). Every config file is backed up before it changes.
 import fs from 'node:fs';
 import path from 'node:path';
 import { APP, HOME, CLI, ROOT, ENV, ensureDir, readJSON, writeJSON, run } from './util.mjs';
@@ -16,11 +16,13 @@ export function backup(file) {
   if (fs.existsSync(file) && !fs.existsSync(`${file}.bak-${APP}`)) fs.copyFileSync(file, `${file}.bak-${APP}`);
 }
 
+export const TARGETS = ['claude', 'codex', 'antigravity'];
+
 export const detect = {
   claude: () => !!resolveAgent('claude'),
   codex: () => !!resolveAgent('codex') || fs.existsSync(path.join(HOME, '.codex')),
-  gemini: () => !!resolveAgent('gemini') || fs.existsSync(path.join(HOME, '.gemini')),
-  antigravity: () => fs.existsSync(path.join(HOME, '.gemini', 'antigravity')),
+  // The Antigravity IDE and the Antigravity CLI (`agy`) both keep their config under ~/.gemini.
+  antigravity: () => !!resolveAgent('antigravity') || fs.existsSync(path.join(HOME, '.gemini')),
 };
 
 // ---- Claude Code ------------------------------------------------------------
@@ -105,20 +107,24 @@ export function codexRemoveMcp() {
   return 'Codex: MCP server removed';
 }
 
-// ---- Gemini CLI / Antigravity (JSON mcpServers) -----------------------------------
+// ---- Antigravity IDE + Antigravity CLI ----------------------------------------------
+// Both read MCP servers from ~/.gemini/config/mcp_config.json (https://antigravity.google/docs/mcp).
+// Older IDE builds used ~/.gemini/antigravity/mcp_config.json, which we also update when it exists.
 
-export const GEMINI_SETTINGS = path.join(HOME, '.gemini', 'settings.json');
-export const ANTIGRAVITY_MCP = path.join(HOME, '.gemini', 'antigravity', 'mcp_config.json');
+const AG_MCP = path.join(HOME, '.gemini', 'config', 'mcp_config.json');
+const AG_MCP_LEGACY = path.join(HOME, '.gemini', 'antigravity', 'mcp_config.json');
+const AGY_SETTINGS = path.join(HOME, '.gemini', 'antigravity-cli', 'settings.json');
+const AG_PERMISSION = `mcp(${APP}/*)`;
 
-export function jsonAddMcp(file, self, extra = {}) {
+function jsonAddMcp(file, self) {
   ensureDir(path.dirname(file));
   backup(file);
   const j = readJSON(file, {});
-  j.mcpServers = { ...(j.mcpServers || {}), [APP]: { ...serverDef(self), ...extra } };
+  j.mcpServers = { ...(j.mcpServers || {}), [APP]: serverDef(self) };
   writeJSON(file, j);
 }
 
-export function jsonRemoveMcp(file) {
+function jsonRemoveMcp(file) {
   const j = readJSON(file);
   if (!j?.mcpServers?.[APP]) return false;
   delete j.mcpServers[APP];
@@ -126,14 +132,48 @@ export function jsonRemoveMcp(file) {
   return true;
 }
 
+export function antigravityAddMcp() {
+  jsonAddMcp(AG_MCP, 'antigravity');
+  const files = [AG_MCP];
+  if (fs.existsSync(path.dirname(AG_MCP_LEGACY))) { jsonAddMcp(AG_MCP_LEGACY, 'antigravity'); files.push(AG_MCP_LEGACY); }
+  // Unconfigured MCP tools run in "Ask" mode, which headless `agy -p` runs can't answer.
+  if (resolveAgent('antigravity') || fs.existsSync(path.dirname(AGY_SETTINGS))) {
+    ensureDir(path.dirname(AGY_SETTINGS));
+    backup(AGY_SETTINGS);
+    const s = readJSON(AGY_SETTINGS, {});
+    s.permissions = s.permissions || {};
+    s.permissions.allow = [...new Set([...(s.permissions.allow || []), AG_PERMISSION])];
+    writeJSON(AGY_SETTINGS, s);
+  }
+  return `Antigravity: MCP server "${APP}" added to ${files.join(' and ')}`;
+}
+
+export function antigravityRemoveMcp() {
+  const removed = [AG_MCP, AG_MCP_LEGACY].filter((f) => jsonRemoveMcp(f));
+  const s = readJSON(AGY_SETTINGS);
+  if (s?.permissions?.allow?.includes(AG_PERMISSION)) {
+    s.permissions.allow = s.permissions.allow.filter((p) => p !== AG_PERMISSION);
+    writeJSON(AGY_SETTINGS, s);
+  }
+  return removed.length ? 'Antigravity: MCP server removed' : null;
+}
+
 // ---- Skills (Agent Skills format: <dir>/<name>/SKILL.md) ------------------------
 
-export const SKILL_DIRS = {
-  claude: path.join(HOME, '.claude', 'skills'),
-  codex: path.join(HOME, '.agents', 'skills'),
-  gemini: path.join(HOME, '.gemini', 'skills'),
-  antigravity: path.join(HOME, '.gemini', 'antigravity', 'skills'),
-};
+export function skillDirs(target) {
+  if (target === 'claude') return [path.join(HOME, '.claude', 'skills')];
+  if (target === 'codex') return [path.join(HOME, '.agents', 'skills')];
+  if (target === 'antigravity') {
+    const legacy = path.join(HOME, '.gemini', 'antigravity');
+    return [path.join(HOME, '.gemini', 'config', 'skills'), ...(fs.existsSync(legacy) ? [path.join(legacy, 'skills')] : [])];
+  }
+  return [];
+}
+
+export const ALL_SKILL_DIRS = [
+  path.join(HOME, '.claude', 'skills'), path.join(HOME, '.agents', 'skills'),
+  path.join(HOME, '.gemini', 'config', 'skills'), path.join(HOME, '.gemini', 'antigravity', 'skills'),
+];
 
 function copyDir(src, dest, transform) {
   ensureDir(dest);

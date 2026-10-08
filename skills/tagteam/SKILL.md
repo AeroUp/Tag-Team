@@ -1,11 +1,11 @@
 ---
 name: tagteam
-description: Work with the other AI coding agents on this machine (Claude Code, Codex, Gemini CLI, Antigravity) through the Tag-Team MCP server. Use when the user wants a second opinion from another AI, wants to delegate a subtask to Codex/Claude/Gemini, compare answers from several models, check which agent is available or rate-limited, or says things like "ask codex", "have gemini do this", "get claude's take", "use another AI".
+description: Work with the other AI coding agents on this machine (Claude Code, Codex, Antigravity) through the Tag-Team MCP server. Use when the user wants a second opinion from another AI, wants to delegate a subtask to Codex/Claude/Antigravity, compare answers from several models, check which agent is available or rate-limited, or says things like "ask codex", "have antigravity do this", "get claude's take", "use another AI".
 ---
 
 # Tag-Team: work with the other agents
 
-Tag-Team is an MCP server (`tagteam`) installed in Claude Code, Codex, Gemini CLI and Antigravity. Through it, any agent can run any other agent headless and read its answer. In Claude Code the tools appear as `mcp__tagteam__<tool>`.
+Tag-Team is an MCP server (`tagteam`) installed in Claude Code, Codex and Antigravity (the IDE and the `agy` CLI). Through it, any agent can run any other agent headless and read its answer. In Claude Code the tools appear as `mcp__tagteam__<tool>`.
 
 | Tool | Use it for |
 |---|---|
@@ -22,7 +22,7 @@ To hand a whole task to another agent when you hit a usage limit, and get woken 
 
 - **Codex**: strong at hands-on implementation, refactors, running and fixing tests, terminal work. It also has built-in image generation.
 - **Claude**: strong at careful reasoning, architecture, code review, long-context reading, writing.
-- **Gemini**: huge context window (whole-repo questions, long logs), web-grounded answers, and multimodal input.
+- **Antigravity** (Gemini models, via the `agy` CLI): huge context window (whole-repo questions, long logs), web-grounded answers, and multimodal input.
 - Don't ask yourself. "auto" picks the first available agent that isn't you.
 
 ## Writing the prompt

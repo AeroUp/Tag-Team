@@ -9,9 +9,9 @@ const COMMON = {
   agents: {
     claude: { path: null, model: null },
     codex: { path: null, model: null },
-    gemini: { path: null, model: null },
+    antigravity: { path: null, model: null },
   },
-  // How deep agents may call agents (Claude → Codex → Gemini = depth 2).
+  // How deep agents may call agents (Claude → Codex → Antigravity = depth 2).
   max_depth: 2,
   // Max simultaneous agent processes across every tool using this core.
   max_concurrent: 6,

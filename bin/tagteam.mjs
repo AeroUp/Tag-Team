@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Tag-Team: Claude, Codex and Gemini working together.
+// Tag-Team: Claude, Codex and Antigravity working together.
 import fs from 'node:fs';
 import path from 'node:path';
 import { VERSION, APP_HOME } from '../src/core/util.mjs';
@@ -39,23 +39,23 @@ async function readStdin() {
   return s;
 }
 
-const HELP = `tagteam ${VERSION}: Claude, Codex and Gemini working together.
+const HELP = `tagteam ${VERSION}: Claude, Codex and Antigravity working together.
 
 Setup
-  tagteam install [--only claude,codex,gemini,antigravity]
+  tagteam install [--only claude,codex,antigravity]
   tagteam uninstall
   tagteam doctor                       who is installed / usage-limited, recent jobs
   tagteam config [get <key> | set <key> <value> | path]
 
 Talk to other agents
-  tagteam ask <claude|codex|gemini|auto> "prompt" [--cwd .] [--access read|write|full] [--session id] [--model m] [--fallback] [--bg]
-  tagteam council "prompt" [--agents codex,gemini]
+  tagteam ask <claude|codex|antigravity|auto> "prompt" [--cwd .] [--access read|write|full] [--session id] [--model m] [--fallback] [--bg]
+  tagteam council "prompt" [--agents codex,antigravity]
   tagteam review [--scope uncommitted|staged|branch|last_commit|files] [--base main] [--focus "..."] [--files a,b] [--agents ...]
 
 Images
-  tagteam imagine "brief" [--engine auto|codex|gemini] [--count 2] [--aspect 16:9] [--out dir] [--name stem] [--ref img.png]
-  tagteam critique img.png [more.png] --brief "what it should be" [--critics claude,gemini]
-  tagteam studio "brief" [--rounds 3] [--target 8] [--engine codex] [--critics claude,gemini] [--bg]
+  tagteam imagine "brief" [--engine auto|codex|antigravity|gemini] [--count 2] [--aspect 16:9] [--out dir] [--name stem] [--ref img.png]
+  tagteam critique img.png [more.png] --brief "what it should be" [--critics claude,antigravity]
+  tagteam studio "brief" [--rounds 3] [--target 8] [--engine codex] [--critics claude,antigravity] [--bg]
 
 Jobs
   tagteam jobs | tagteam job <id> [--wait 300] | tagteam logs <id> [-f] | tagteam cancel <id>
@@ -80,7 +80,7 @@ async function main() {
       const { install } = await import('../src/install.mjs');
       console.log('Installing Tag-Team…');
       await install({ only: list(flags.only) });
-      console.log('\nDone. Restart your agents (Claude Code, Codex, Gemini CLI, Antigravity) so they load the "tagteam" MCP server and skills.\nCheck with: tagteam doctor');
+      console.log('\nDone. Restart your agents (Claude Code, Codex, Antigravity) so they load the "tagteam" MCP server and skills.\nCheck with: tagteam doctor');
       return;
     }
     case 'uninstall': {
@@ -91,6 +91,7 @@ async function main() {
     case 'status': {
       const s = await status();
       const { installedTargets } = await import('../src/install.mjs');
+      if (flags.json) return out({ version: VERSION, data_dir: APP_HOME, wired_into: installedTargets(), ...s });
       console.log(`Tag-Team ${VERSION} · data ${APP_HOME}\n`);
       for (const a of s.agents) {
         const v = a.installed ? await agentVersion(a.agent) : null;
@@ -98,7 +99,7 @@ async function main() {
         console.log(`${LABEL[a.agent].padEnd(7)} ${state}${v ? ` · ${v}` : ''}${a.path ? `\n        ${a.path}` : ''}`);
         if (a.usage) console.log(`        usage: 5h ${a.usage.five_hour_used_pct ?? '?'}% (resets ${a.usage.five_hour_resets}) · week ${a.usage.weekly_used_pct ?? '?'}% (resets ${a.usage.weekly_resets}) · as of ${a.usage.as_of}`);
       }
-      console.log(`\nImages: codex ${s.image_engines.codex ? 'ready' : 'missing'} · gemini API ${s.image_engines.gemini_api ? 'ready' : 'no key (see README)'}`);
+      console.log(`\nImages: codex ${s.image_engines.codex ? 'ready' : 'missing'} · antigravity ${s.image_engines.antigravity ? 'ready' : 'missing'} · gemini API ${s.image_engines.gemini_api ? 'ready' : 'no key (see README)'}`);
       console.log(`Wired into: ${installedTargets().join(', ') || 'nothing yet (run: tagteam install)'}`);
       console.log(`Jobs:\n${s.jobs.map((j) => `  ${j.id} ${j.title} [${j.status}] ${j.created}`).join('\n') || '  none'}`);
       return;

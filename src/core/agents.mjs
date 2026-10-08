@@ -6,8 +6,11 @@ import { HOME, IS_WIN, APP_HOME, SHARED_HOME, TITLE, ENV, run, which, newestMatc
 import { loadConfig } from './config.mjs';
 import { classifyFailure, parseResetTime, markLimited, clearLimit, codexUsage } from './limits.mjs';
 
-export const AGENTS = ['claude', 'codex', 'gemini'];
-export const LABEL = { claude: 'Claude', codex: 'Codex', gemini: 'Gemini' };
+export const AGENTS = ['claude', 'codex', 'antigravity'];
+export const LABEL = { claude: 'Claude', codex: 'Codex', antigravity: 'Antigravity' };
+
+// Antigravity CLI replaced Gemini CLI in 2026; accept the old names too.
+export const normAgent = (a) => (a === 'gemini' || a === 'agy' ? 'antigravity' : a);
 
 // npm .cmd shims can't be spawned without a shell on modern Node; run their JS directly.
 function unwrapShim(p) {
@@ -41,15 +44,16 @@ const candidates = {
       path.join(HOME, '.codex', '.sandbox-bin', IS_WIN ? 'codex.exe' : 'codex'),
     ];
   },
-  gemini: () => [
-    which('gemini'),
-    IS_WIN && path.join(process.env.APPDATA || '', 'npm', 'gemini.cmd'),
-    !IS_WIN && '/usr/local/bin/gemini',
+  antigravity: () => [
+    which('agy'),
+    IS_WIN && path.join(process.env.LOCALAPPDATA || '', 'agy', 'bin', 'agy.exe'),
+    path.join(HOME, '.local', 'bin', IS_WIN ? 'agy.exe' : 'agy'),
   ],
 };
 
 const resolved = {};
 export function resolveAgent(name) {
+  name = normAgent(name);
   if (resolved[name] !== undefined) return resolved[name];
   const cfg = loadConfig().agents[name] || {};
   const list = [cfg.path, ...(candidates[name]?.() || [])].filter(Boolean);
@@ -195,42 +199,62 @@ function codexParser(spec) {
   };
 }
 
-// ---- Gemini CLI -----------------------------------------------------------
+// ---- Antigravity CLI (`agy`) ---------------------------------------------------
+// Headless docs: https://antigravity.google/docs/cli/headless/
 
-function geminiSpec(o) {
-  const args = ['--output-format', 'json'];
-  if (o.session) args.push('--resume', o.session);
-  if (o.model) args.push('-m', o.model);
-  args.push('--approval-mode', o.access === 'full' ? 'yolo' : o.access === 'write' ? 'auto_edit' : 'default');
-  for (const d of o.addDirs || []) args.push('--include-directories', d);
+// Windows command lines top out near 32K chars, so very long prompts go through
+// a temporary file in the workspace (reads inside the workspace are auto-allowed).
+const AGY_ARG_LIMIT = 24000;
+
+function antigravitySpec(o) {
+  const args = ['--output-format', 'stream-json', '--print-timeout', `${o.timeoutSec || loadConfig().default_timeout_sec}s`];
+  if (o.session) args.push('--conversation', o.session);
+  if (o.model) args.push('--model', o.model);
+  // Shell commands are soft-denied headlessly unless pre-granted, in every mode.
+  if (o.access === 'full') args.push('--dangerously-skip-permissions');
+  else args.push('--mode', o.access === 'write' ? 'accept-edits' : 'plan', '--sandbox');
   let prompt = `${HEADLESS_NOTE(o.caller)}\n\n${o.prompt}`;
-  if (o.images?.length) prompt = `${o.images.map((p) => `@${p}`).join(' ')}\n\n${prompt}`;
-  // Short prompts go on the command line; long ones via stdin.
-  if (prompt.length < 7000) return { args: [...args, '-p', prompt], stdin: '' };
-  return { args: [...args, '-p', 'Follow the instructions given on stdin above.'], stdin: prompt };
+  if (o.images?.length) prompt = `Image file(s) to look at:\n${o.images.map((p) => `- ${p}`).join('\n')}\n\n${prompt}`;
+  let promptFile = null;
+  if (prompt.length > AGY_ARG_LIMIT) {
+    promptFile = path.join(o.cwd, `.agy-prompt-${process.pid}-${Date.now()}.md`);
+    fs.writeFileSync(promptFile, prompt);
+    prompt = `Read the file ${path.basename(promptFile)} in the current directory and follow the instructions in it exactly.`;
+  }
+  return { args: ['-p', prompt, ...args], stdin: null, promptFile };
 }
 
-function geminiParser() {
-  const st = { raw: '' };
+function antigravityParser(spec) {
+  const st = { session: null, text: '', result: null, plain: '' };
   return {
     st,
-    line(l) { st.raw += `${l}\n`; },
-    finish(r) {
-      const raw = st.raw || r.stdout;
-      let j = null;
-      try { j = JSON.parse(raw); } catch {
-        const i = raw.indexOf('{');
-        if (i >= 0) try { j = JSON.parse(raw.slice(i)); } catch {}
+    line(l, log) {
+      let j;
+      try { j = JSON.parse(l); } catch { st.plain += `${l}\n`; return; }
+      const ev = j.event;
+      const p = (ev && j[ev]) || j.payload || j;
+      if (p?.conversation_id) st.session = p.conversation_id;
+      if (ev === 'step_update') {
+        if (p.step_type === 'tool' && p.state === 'ACTIVE' && p.tool_name) log?.(`→ ${p.tool_name}`);
+        if (p.step_type === 'agent_response' && p.text_delta) st.text += p.text_delta;
+      } else if (ev === 'result' || (!ev && p.status && 'response' in p)) {
+        st.result = p;
       }
-      const answer = j?.response ?? (j ? '' : raw.trim());
-      const err = j?.error ? `${j.error.type || ''} ${j.error.message || ''} ${j.error.code || ''}` : '';
-      const errText = err || (r.code !== 0 ? `${r.stderr}\n${raw}`.slice(-4000) : '');
-      return { answer, session_id: j?.session_id || j?.sessionId || null, errorText: errText, ok: r.code === 0 && !err, resetAt: null, meta: { stats: j?.stats ? 'yes' : undefined } };
+    },
+    finish(r) {
+      if (spec.promptFile) try { fs.unlinkSync(spec.promptFile); } catch {}
+      const res = st.result;
+      if (!res && st.plain.trim()) { // builds that print plain text
+        return { answer: st.plain.trim(), session_id: st.session, errorText: r.code !== 0 ? r.stderr.slice(-4000) : '', ok: r.code === 0, resetAt: null, meta: {} };
+      }
+      const ok = r.code === 0 && (!res?.status || res.status === 'SUCCESS');
+      const errText = ok ? '' : `${res?.status && res.status !== 'SUCCESS' ? `${res.status}: ` : ''}${res?.error || ''}\n${r.stderr}`.trim().slice(-4000);
+      return { answer: res?.response ?? st.text, session_id: res?.conversation_id || st.session, errorText: errText, ok, resetAt: null, meta: { turns: res?.num_turns } };
     },
   };
 }
 
-const SPECS = { claude: [claudeSpec, claudeParser], codex: [codexSpec, codexParser], gemini: [geminiSpec, geminiParser] };
+const SPECS = { claude: [claudeSpec, claudeParser], codex: [codexSpec, codexParser], antigravity: [antigravitySpec, antigravityParser] };
 
 /**
  * Run an agent headless.
@@ -238,6 +262,7 @@ const SPECS = { claude: [claudeSpec, claudeParser], codex: [codexSpec, codexPars
  * → { agent, ok, answer, session_id, limited_until, transient, error, duration_ms, meta }
  */
 export async function runAgent(agent, opts) {
+  agent = normAgent(agent);
   const a = resolveAgent(agent);
   if (!a) return { agent, ok: false, error: `${LABEL[agent] || agent} CLI not found. ${installHint(agent)}` };
   const cfg = loadConfig();
@@ -277,7 +302,6 @@ export async function runAgent(agent, opts) {
       const u = codexUsage();
       until = [u?.primary, u?.secondary].filter((w) => w?.used_percent >= 100).map((w) => w.resets_at).sort((x, y) => y - x)[0];
     }
-    if (!until && agent === 'gemini') until = nextPacificMidnight();
     res.limited_until = until || Date.now() + cfg.unknown_reset_retry_min * 60e3;
     res.ok = false;
     markLimited(agent, res.limited_until, failureText);
@@ -290,20 +314,13 @@ export async function runAgent(agent, opts) {
   return res;
 }
 
-function nextPacificMidnight() {
-  const now = new Date();
-  const la = new Date(now.toLocaleString('en-US', { timeZone: 'America/Los_Angeles' }));
-  const diff = now.getTime() - la.getTime();
-  la.setHours(24, 5, 0, 0);
-  return la.getTime() + diff;
-}
-
 export function installHint(agent) {
   return {
     claude: 'Install Claude Code: https://claude.com/claude-code (then run `claude` once to log in).',
     codex: 'Install Codex: `npm i -g @openai/codex` or the Codex desktop app, then log in once.',
-    gemini: 'Install Gemini CLI: `npm i -g @google/gemini-cli`, run `gemini` once to log in, then re-run the install command.',
-  }[agent] || '';
+    antigravity: 'Install the Antigravity CLI: `irm https://antigravity.google/cli/install.ps1 | iex` (Windows) or '
+      + '`curl -fsSL https://antigravity.google/cli/install.sh | bash`, run `agy` once to sign in, then re-run the install command.',
+  }[normAgent(agent)] || '';
 }
 
 export async function agentVersion(agent) {
@@ -316,3 +333,6 @@ export async function agentVersion(agent) {
 export function osInfo() {
   return `${os.platform()} ${os.release()}`;
 }
+
+// Exposed for the offline self-test only.
+export const _test = { antigravitySpec, antigravityParser };

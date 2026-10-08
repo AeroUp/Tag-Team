@@ -1,10 +1,10 @@
-// Image studio: generate with Codex (built-in image_gen) or Gemini (Nano Banana via API),
-// critique with Claude / Gemini / Codex, and iterate generate → critique → refine.
+// Image studio: generate with Codex (built-in image_gen), Antigravity (its agent's image tool) or
+// Gemini (Nano Banana via API key); critique with Claude / Antigravity / Codex; iterate generate → critique → refine.
 import fs from 'node:fs';
 import path from 'node:path';
 import { APP, HOME, APP_HOME, ensureDir, readJSON, writeJSON, extractJSON, truncate, fmtTime } from './core/util.mjs';
 import { loadConfig } from './core/config.mjs';
-import { runAgent, resolveAgent } from './core/agents.mjs';
+import { runAgent, resolveAgent, normAgent } from './core/agents.mjs';
 import { limitedUntil } from './core/limits.mjs';
 
 const IMG_RE = /\.(png|jpe?g|webp|gif)$/i;
@@ -171,7 +171,37 @@ async function codexImagine({ prompt, refs, aspect, outDir, name, count, ctx }) 
   return { ok: true, engine: 'codex', files, prompt_used: parsed.prompt_used || null };
 }
 
-/** Generate image(s). engine: auto | codex | gemini */
+// The Antigravity agent can draw with its built-in image tool. It works inside the
+// output folder (its workspace), and we pick up whatever image files appear there.
+async function antigravityImagine({ prompt, refs, aspect, outDir, name, count, ctx }) {
+  const started = Date.now();
+  const before = new Set(listImages(outDir).map((f) => f.p));
+  const instr = [
+    `Use your built-in image generation tool to create ${count} image(s).`,
+    '',
+    'BRIEF:',
+    prompt,
+    aspect ? `\nAspect ratio: ${aspect}` : '',
+    refs.length ? '\nThe attached image(s) are references: follow their style/composition, or revise them if the brief says so.' : '',
+    '',
+    'Rules:',
+    '- Use the image generation tool only. Do not write code, SVG, HTML or call any API or script.',
+    `- Save each final image in the current folder as ${name}-1.png, ${name}-2.png, … (keep the real file extension).`,
+    '- Your final reply must be ONLY this JSON: {"files": ["<file name>", ...]}',
+  ].join('\n');
+  const r = await runAgent('antigravity', {
+    prompt: instr, cwd: outDir, access: 'write', images: refs, timeoutSec: 900,
+    caller: 'Tag-Team image studio', log: ctx.log, signal: ctx.signal, onSpawn: ctx.onSpawn,
+  });
+  if (!r.ok) return { ok: false, error: r.error, limited_until: r.limited_until };
+  const parsed = extractJSON(r.answer) || {};
+  let files = (parsed.files || []).map((f) => path.resolve(outDir, f)).filter((f) => IMG_RE.test(f) && fs.existsSync(f));
+  if (!files.length) files = listImages(outDir).filter((f) => !before.has(f.p) && f.m >= started - 5000).map((f) => f.p);
+  if (!files.length) return { ok: false, error: `Antigravity finished without saving an image. Its reply: ${truncate(r.answer, 400)}` };
+  return { ok: true, engine: 'antigravity', files };
+}
+
+/** Generate image(s). engine: auto | codex | antigravity | gemini */
 export async function imagine(p, ctx = {}) {
   const cfg = loadConfig().images;
   const engine = p.engine || cfg.engine;
@@ -182,7 +212,7 @@ export async function imagine(p, ctx = {}) {
   const refs = (p.reference_images || []).map((f) => path.resolve(cwd, f));
   const missing = refs.filter((f) => !fs.existsSync(f));
   if (missing.length) return { ok: false, error: `Reference image(s) not found: ${missing.join(', ')}` };
-  const order = engine === 'auto' ? ['codex', 'gemini'] : [engine];
+  const order = engine === 'auto' ? ['codex', 'antigravity', 'gemini'] : [engine];
   const errors = [];
   for (const e of order) {
     if (e === 'codex') {
@@ -192,6 +222,13 @@ export async function imagine(p, ctx = {}) {
       const r = await codexImagine({ prompt: p.prompt, refs, aspect: p.aspect_ratio, outDir, name, count, ctx });
       if (r.ok) return r;
       errors.push(`codex: ${r.error}`);
+    } else if (e === 'antigravity') {
+      if (!resolveAgent('antigravity')) { errors.push('antigravity: Antigravity CLI (agy) not installed'); continue; }
+      const lu = limitedUntil('antigravity');
+      if (lu && order.length > 1) { errors.push(`antigravity: rate-limited until ${fmtTime(lu)}`); continue; }
+      const r = await antigravityImagine({ prompt: p.prompt, refs, aspect: p.aspect_ratio, outDir, name, count, ctx });
+      if (r.ok) return r;
+      errors.push(`antigravity: ${r.error}`);
     } else if (e === 'gemini') {
       if (!geminiKey()) { errors.push(`gemini: ${NO_KEY}`); continue; }
       try {
@@ -199,7 +236,7 @@ export async function imagine(p, ctx = {}) {
       } catch (err) {
         errors.push(`gemini: ${err.message}`);
       }
-    } else errors.push(`${e}: unknown engine (use codex or gemini)`);
+    } else errors.push(`${e}: unknown engine (use codex, antigravity or gemini)`);
   }
   return { ok: false, error: `Image generation failed.\n${errors.join('\n')}` };
 }
@@ -232,13 +269,14 @@ function normalizeCritique(critic, text) {
 }
 
 export function availableCritics(list) {
-  const want = list?.length ? list : loadConfig().images.critics;
-  return want.filter((c) => (c === 'gemini' ? resolveAgent('gemini') || geminiKey() : resolveAgent(c)) && !limitedUntil(c));
+  const want = [...new Set((list?.length ? list : loadConfig().images.critics).map(normAgent))];
+  // Without the Antigravity CLI, the antigravity critic falls back to the Gemini API (if a key is set).
+  return want.filter((c) => (c === 'antigravity' ? resolveAgent(c) || geminiKey() : resolveAgent(c)) && !limitedUntil(c));
 }
 
 async function critiqueOne(critic, image, brief, ctx) {
   const prompt = RUBRIC(brief);
-  if (critic === 'gemini' && !resolveAgent('gemini')) {
+  if (critic === 'antigravity' && !resolveAgent('antigravity')) {
     const key = geminiKey();
     if (!key) return { critic, ok: false, error: NO_KEY };
     try {
@@ -269,7 +307,7 @@ export async function critique(p, ctx = {}) {
   const missing = images.filter((f) => !fs.existsSync(f));
   if (!images.length || missing.length) return { ok: false, error: missing.length ? `Image(s) not found: ${missing.join(', ')}` : 'No images given.' };
   const critics = availableCritics(p.critics);
-  if (!critics.length) return { ok: false, error: 'No critic available (install Claude/Codex/Gemini CLI or set a Gemini API key).' };
+  if (!critics.length) return { ok: false, error: 'No critic available (install Claude Code, Codex or the Antigravity CLI, or set a Gemini API key).' };
   const results = [];
   for (const image of images) {
     const critiques = await Promise.all(critics.map((c) => critiqueOne(c, image, p.brief, ctx)));

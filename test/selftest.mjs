@@ -6,6 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseResetTime, classifyFailure } from '../src/core/limits.mjs';
 import { extractJSON } from '../src/core/util.mjs';
+import { _test as agy, normAgent } from '../src/core/agents.mjs';
 
 const CLI = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'tagteam.mjs');
 const results = [];
@@ -62,7 +63,7 @@ export async function selftest() {
   await t('Codex: "try again in 2 hours 13 minutes"', () => {
     assert.equal(parseResetTime("You've hit your usage limit. Try again in 2 hours 13 minutes.", now), now + (2 * 60 + 13) * 60e3);
   });
-  await t('Gemini: "Please retry in 34.5s"', () => {
+  await t('Antigravity/Gemini: "Please retry in 34.5s"', () => {
     assert.equal(parseResetTime('Quota exceeded. Please retry in 34.5s.', now), now + 34500);
   });
   await t('ISO reset time', () => {
@@ -77,6 +78,30 @@ export async function selftest() {
   await t('extractJSON from fenced / prose output', () => {
     assert.deepEqual(extractJSON('Sure!\n```json\n{"score": 7.5, "issues": [{"p": "a}b"}]}\n```'), { score: 7.5, issues: [{ p: 'a}b' }] });
     assert.deepEqual(extractJSON('noise {"a":1} tail'), { a: 1 });
+  });
+  await t('Antigravity CLI: flags per access level', () => {
+    const args = (o) => agy.antigravitySpec({ prompt: 'hi', cwd: os.tmpdir(), timeoutSec: 600, ...o }).args;
+    assert.deepEqual(args({ access: 'read' }).slice(-3), ['--mode', 'plan', '--sandbox']);
+    assert.ok(args({ access: 'write' }).includes('accept-edits'));
+    assert.ok(args({ access: 'full' }).includes('--dangerously-skip-permissions'));
+    assert.ok(args({ session: 'c1' }).join(' ').includes('--conversation c1'));
+    assert.ok(args({}).join(' ').includes('--output-format stream-json --print-timeout 600s'));
+    assert.equal(normAgent('gemini'), 'antigravity');
+  });
+  await t('Antigravity CLI: stream-json success and quota error', () => {
+    const ok = agy.antigravityParser({});
+    for (const e of [
+      { event: 'init', init: { cwd: '/p', permission_mode: 'request-review' } },
+      { event: 'step_update', step_update: { conversation_id: 'conv-1', step_type: 'tool', state: 'ACTIVE', tool_name: 'view_file' } },
+      { event: 'step_update', step_update: { conversation_id: 'conv-1', step_type: 'agent_response', text_delta: 'Hel' } },
+      { event: 'result', result: { conversation_id: 'conv-1', status: 'SUCCESS', response: 'Hello', num_turns: 1 } },
+    ]) ok.line(JSON.stringify(e));
+    const r1 = ok.finish({ code: 0, stderr: '' });
+    assert.equal(r1.ok, true); assert.equal(r1.answer, 'Hello'); assert.equal(r1.session_id, 'conv-1');
+    const bad = agy.antigravityParser({});
+    bad.line(JSON.stringify({ event: 'result', result: { status: 'ERROR', error: 'You have exhausted your quota. Your quota resets in 2 hours.' } }));
+    const r2 = bad.finish({ code: 1, stderr: '' });
+    assert.equal(r2.ok, false); assert.equal(classifyFailure(r2.errorText), 'limit');
   });
   await t('MCP: handshake, tools/list, agents tool, unknown method', async () => {
     const c = mcpClient(CLI);

@@ -119,7 +119,10 @@ export function getLimits() {
   return all;
 }
 
+const norm = (a) => (a === 'gemini' || a === 'agy' ? 'antigravity' : a);
+
 export function markLimited(agent, until, reason) {
+  agent = norm(agent);
   const all = readJSON(STORE, {});
   all[agent] = { until, reason: String(reason || '').slice(0, 300), observed: Date.now() };
   writeJSON(STORE, all);
@@ -185,6 +188,7 @@ export function codexUsage() {
 
 /** When is `agent` usable again? Returns epoch ms (0 = available now). */
 export function limitedUntil(agent) {
+  agent = norm(agent);
   const now = Date.now();
   let until = getLimits()[agent]?.until || 0;
   if (agent === 'codex') {
