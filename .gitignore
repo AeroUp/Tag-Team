@@ -1,0 +1,8 @@
+node_modules/
+*.log
+.DS_Store
+Thumbs.db
+# runtime output this tool writes into projects
+.relay/
+.tagteam/
+tagteam-images/

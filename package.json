@@ -1,0 +1,25 @@
+{
+  "name": "tag-team",
+  "version": "0.1.0",
+  "description": "Let Claude Code, Codex and Gemini work together: an MCP bridge for cross-AI delegation, multi-model code review and an image generate-critique studio.",
+  "type": "module",
+  "bin": {
+    "tagteam": "bin/tagteam.mjs"
+  },
+  "files": ["bin", "src", "skills", "test", "README.md", "LICENSE"],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node bin/tagteam.mjs selftest"
+  },
+  "keywords": ["mcp", "model-context-protocol", "claude-code", "codex", "gemini-cli", "antigravity", "agents", "multi-agent", "code-review", "agent-skills"],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AeroUp/Tag-Team.git"
+  },
+  "bugs": "https://github.com/AeroUp/Tag-Team/issues",
+  "homepage": "https://github.com/AeroUp/Tag-Team#readme",
+  "author": "Aero",
+  "license": "MIT"
+}
