@@ -9,7 +9,8 @@ const MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', '
 
 // Text that means "you're out of quota until later" (as opposed to a transient 429).
 const LIMIT_RE = /(usage limit|hit your (?:\w+ )?limit|reached your (?:\w+ )?limit|limit reached|out of (?:usage )?credits|quota (?:exceeded|exhausted)|exhausted your|resource_exhausted|rate limit(?:ed)? .*reset|spend limit|try again (?:at|in)|resets? (?:at|in|on)?\s*\d|usage_limit_reached)/i;
-const TRANSIENT_RE = /(rate limited|too many requests|\b429\b|overloaded|\b529\b|temporarily unavailable)/i;
+// Network trouble (offline, proxy down, DNS) also counts: wait and retry instead of giving up.
+const TRANSIENT_RE = /(rate limited|too many requests|\b429\b|overloaded|\b529\b|temporarily unavailable|connection ?refused|ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|fetch failed|network error|socket hang up)/i;
 
 export function classifyFailure(text) {
   if (!text) return null;

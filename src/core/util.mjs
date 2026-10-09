@@ -207,21 +207,49 @@ export function event(msg) {
   appendLog(path.join(APP_HOME, 'events.log'), msg);
 }
 
-// Best-effort desktop notification; never throws, never blocks.
+// Optional Discord webhook for notifications (reaches your phone even while you're gaming).
+// Shared by every tool on this core: { "discord_webhook": "https://discord.com/api/webhooks/…" }
+export const NOTIFY_CONFIG = path.join(SHARED_HOME, 'notify.json');
+
+const xmlEsc = (s) => String(s).replace(/[<>&'"]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', "'": '&apos;', '"': '&quot;' })[c]).slice(0, 300);
+
+// Windows toast that stays in the Notification Center. The old NotifyIcon balloon deleted
+// itself after a few seconds, so it vanished unseen whenever Windows muted notifications
+// (e.g. "do not disturb while gaming"). Attributed to Windows PowerShell's registered app id.
+function windowsToast(title, body) {
+  const ps = `$ErrorActionPreference = 'Stop'
+[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null
+[Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] | Out-Null
+$xml = New-Object Windows.Data.Xml.Dom.XmlDocument
+$xml.LoadXml('<toast><visual><binding template="ToastGeneric"><text>${xmlEsc(title).replace(/'/g, "''")}</text><text>${xmlEsc(body).replace(/'/g, "''")}</text></binding></visual></toast>')
+$app = '{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\\WindowsPowerShell\\v1.0\\powershell.exe'
+[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($app).Show([Windows.UI.Notifications.ToastNotification]::new($xml))`;
+  const out = fs.openSync(path.join(ensureDir(APP_HOME), 'notify.log'), 'a');
+  spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-EncodedCommand', Buffer.from(ps, 'utf16le').toString('base64')], {
+    detached: true, stdio: ['ignore', out, out], windowsHide: true,
+  }).unref();
+  fs.closeSync(out);
+}
+
+function discordWebhook(title, body) {
+  const url = readJSON(NOTIFY_CONFIG, {})?.discord_webhook;
+  if (!url || !/^https:\/\/(discord|discordapp)\.com\/api\/webhooks\//.test(url)) return;
+  fetch(url, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ username: TITLE, embeds: [{ title: String(title).slice(0, 250), description: String(body).slice(0, 2000), color: 0xa855f7, timestamp: new Date().toISOString() }] }),
+    signal: AbortSignal.timeout(10000),
+  }).catch((e) => appendLog(path.join(APP_HOME, 'notify.log'), `discord webhook failed: ${e.message}`));
+}
+
+// Desktop notification (+ Discord if configured). Never throws, never blocks.
 export function notify(title, body) {
   event(`${title}: ${body}`);
   if (process.env.AGENT_NO_NOTIFY) return;
+  try { discordWebhook(title, body); } catch {}
   try {
     if (IS_WIN) {
-      const esc = (s) => String(s).replace(/'/g, "''").slice(0, 250);
-      const ps = `Add-Type -AssemblyName System.Windows.Forms; Add-Type -AssemblyName System.Drawing;
-$n = New-Object System.Windows.Forms.NotifyIcon; $n.Icon = [System.Drawing.SystemIcons]::Information;
-$n.BalloonTipTitle = '${esc(title)}'; $n.BalloonTipText = '${esc(body)}'; $n.Visible = $true;
-$n.ShowBalloonTip(10000); Start-Sleep -Seconds 11; $n.Dispose()`;
-      const enc = Buffer.from(ps, 'utf16le').toString('base64');
-      spawn('powershell.exe', ['-NoProfile', '-WindowStyle', 'Hidden', '-EncodedCommand', enc], {
-        detached: true, stdio: 'ignore', windowsHide: true,
-      }).unref();
+      windowsToast(title, body);
     } else if (process.platform === 'darwin') {
       const q = (s) => JSON.stringify(String(s));
       spawn('osascript', ['-e', `display notification ${q(body)} with title ${q(title)}`], { detached: true, stdio: 'ignore' }).unref();
