@@ -211,17 +211,27 @@ export function event(msg) {
 // Shared by every tool on this core: { "discord_webhook": "https://discord.com/api/webhooks/…" }
 export const NOTIFY_CONFIG = path.join(SHARED_HOME, 'notify.json');
 
-const xmlEsc = (s) => String(s).replace(/[<>&'"]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', "'": '&apos;', '"': '&quot;' })[c]).slice(0, 300);
+const xmlEsc = (s, max = 300) => String(s).slice(0, max).replace(/[<>&'"]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', "'": '&apos;', '"': '&quot;' })[c]);
+const isLoopback = (u) => { try { return /^(localhost|127\.|\[::1\]$)/.test(new URL(u).hostname); } catch { return true; } };
+
+// Toast XML. A click on the toast opens opts.url; opts.actions adds buttons: [{ label, url }].
+// Protocol activation needs no registered app, so http:// and codex:// links both work.
+export function toastXml(title, body, { url, actions = [] } = {}) {
+  const launch = url ? ` activationType="protocol" launch="${xmlEsc(url, 2000)}"` : '';
+  const buttons = actions.filter((a) => a?.url).slice(0, 5)
+    .map((a) => `<action content="${xmlEsc(a.label, 40)}" activationType="protocol" arguments="${xmlEsc(a.url, 2000)}"/>`).join('');
+  return `<toast${launch}><visual><binding template="ToastGeneric"><text>${xmlEsc(title)}</text><text>${xmlEsc(body)}</text></binding></visual>${buttons ? `<actions>${buttons}</actions>` : ''}</toast>`;
+}
 
 // Windows toast that stays in the Notification Center. The old NotifyIcon balloon deleted
 // itself after a few seconds, so it vanished unseen whenever Windows muted notifications
 // (e.g. "do not disturb while gaming"). Attributed to Windows PowerShell's registered app id.
-function windowsToast(title, body) {
+function windowsToast(title, body, opts) {
   const ps = `$ErrorActionPreference = 'Stop'
 [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null
 [Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] | Out-Null
 $xml = New-Object Windows.Data.Xml.Dom.XmlDocument
-$xml.LoadXml('<toast><visual><binding template="ToastGeneric"><text>${xmlEsc(title).replace(/'/g, "''")}</text><text>${xmlEsc(body).replace(/'/g, "''")}</text></binding></visual></toast>')
+$xml.LoadXml('${toastXml(title, body, opts).replace(/'/g, "''")}')
 $app = '{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\\WindowsPowerShell\\v1.0\\powershell.exe'
 [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($app).Show([Windows.UI.Notifications.ToastNotification]::new($xml))`;
   const out = fs.openSync(path.join(ensureDir(APP_HOME), 'notify.log'), 'a');
@@ -231,25 +241,28 @@ $app = '{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\\WindowsPowerShell\\v1.0\\powersh
   fs.closeSync(out);
 }
 
-function discordWebhook(title, body) {
+function discordWebhook(title, body, { url: link } = {}) {
   const url = readJSON(NOTIFY_CONFIG, {})?.discord_webhook;
   if (!url || !/^https:\/\/(discord|discordapp)\.com\/api\/webhooks\//.test(url)) return;
+  // Discord only links somewhere the phone can reach (not 127.0.0.1).
+  const embedLink = link && /^https?:/.test(link) && !isLoopback(link) ? { url: link } : {};
   fetch(url, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ username: TITLE, embeds: [{ title: String(title).slice(0, 250), description: String(body).slice(0, 2000), color: 0xa855f7, timestamp: new Date().toISOString() }] }),
+    body: JSON.stringify({ username: TITLE, embeds: [{ title: String(title).slice(0, 250), description: String(body).slice(0, 2000), color: 0xa855f7, timestamp: new Date().toISOString(), ...embedLink }] }),
     signal: AbortSignal.timeout(10000),
   }).catch((e) => appendLog(path.join(APP_HOME, 'notify.log'), `discord webhook failed: ${e.message}`));
 }
 
 // Desktop notification (+ Discord if configured). Never throws, never blocks.
-export function notify(title, body) {
+// opts: { url: opened when the toast is clicked, actions: [{ label, url }] buttons (Windows) }
+export function notify(title, body, opts = {}) {
   event(`${title}: ${body}`);
   if (process.env.AGENT_NO_NOTIFY) return;
-  try { discordWebhook(title, body); } catch {}
+  try { discordWebhook(title, body, opts); } catch {}
   try {
     if (IS_WIN) {
-      windowsToast(title, body);
+      windowsToast(title, body, opts);
     } else if (process.platform === 'darwin') {
       const q = (s) => JSON.stringify(String(s));
       spawn('osascript', ['-e', `display notification ${q(body)} with title ${q(title)}`], { detached: true, stdio: 'ignore' }).unref();
@@ -257,6 +270,19 @@ export function notify(title, body) {
       spawn('notify-send', [title, body], { detached: true, stdio: 'ignore' }).on('error', () => {}).unref();
     }
   } catch {}
+}
+
+// Open a URL (http(s):// or an app link such as codex://) with the system handler.
+export function openUrl(url) {
+  if (!/^(https?|codex|claude):\/\/[^\s"<>]+$/i.test(String(url))) return false;
+  try {
+    const [cmd, args] = IS_WIN ? ['rundll32.exe', ['url.dll,FileProtocolHandler', url]]
+      : process.platform === 'darwin' ? ['open', [url]] : ['xdg-open', [url]];
+    spawn(cmd, args, { detached: true, stdio: 'ignore', windowsHide: true }).on('error', () => {}).unref();
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 // First balanced JSON object in model output (handles ```json fences and prose around it).

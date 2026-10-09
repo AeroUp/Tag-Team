@@ -11,6 +11,8 @@ const TERMINAL = new Set(['done', 'failed', 'cancelled']);
 
 const jobFile = (id) => path.join(JOBS, id, 'job.json');
 export const jobLog = (id) => path.join(JOBS, id, 'log.txt');
+// Raw agent event stream (stream-json / --json lines), for live viewers.
+export const jobEvents = (id) => path.join(JOBS, id, 'events.jsonl');
 
 export function getJob(id) {
   const j = readJSON(jobFile(id));
@@ -92,6 +94,8 @@ export async function runJobProcess(id, ops) {
     if (!fn) throw new Error(`unknown op ${j.op}`);
     const result = await fn(j.params, {
       log,
+      events: jobEvents(id),
+      onSession: (session_id) => updateJob(id, { session_id }),
       onSpawn: (pid) => {
         const cur = readJSON(jobFile(id)) || {};
         updateJob(id, { child_pids: [...(cur.child_pids || []), pid] });

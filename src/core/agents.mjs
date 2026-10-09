@@ -88,7 +88,7 @@ export function childEnv(extra = {}) {
 export const depth = () => parseInt(process.env[ENV.DEPTH] || '0', 10) || 0;
 
 const HEADLESS_NOTE = (caller) =>
-  `You were started headlessly by ${TITLE}${caller ? ` on behalf of ${caller}` : ''}. ` +
+  `You were started headlessly by ${TITLE}${caller && caller !== TITLE ? ` on behalf of ${caller}` : ''}. ` +
   'No human is watching this run and nobody can answer questions: make reasonable assumptions, ' +
   'work autonomously, and finish with a concise final report of what you did and found.';
 
@@ -169,7 +169,8 @@ function codexSpec(o) {
   args.push(...sandboxOverride);
   if (o.model) args.push('-m', o.model);
   args.push('--json', '--skip-git-repo-check', '-o', lastFile, '-');
-  return { args, stdin: `${HEADLESS_NOTE(o.caller)}\n\n${o.prompt}`, lastFile };
+  // The first line becomes the thread's title in the Codex app, so lead with o.title when given.
+  return { args, stdin: `${o.title ? `${o.title}\n\n` : ''}${HEADLESS_NOTE(o.caller)}\n\n${o.prompt}`, lastFile };
 }
 
 function codexParser(spec) {
@@ -215,6 +216,7 @@ function antigravitySpec(o) {
   else args.push('--mode', o.access === 'write' ? 'accept-edits' : 'plan', '--sandbox');
   let prompt = `${HEADLESS_NOTE(o.caller)}\n\n${o.prompt}`;
   if (o.images?.length) prompt = `Image file(s) to look at:\n${o.images.map((p) => `- ${p}`).join('\n')}\n\n${prompt}`;
+  if (o.title) prompt = `${o.title}\n\n${prompt}`;
   let promptFile = null;
   if (prompt.length > AGY_ARG_LIMIT) {
     promptFile = path.join(o.cwd, `.agy-prompt-${process.pid}-${Date.now()}.md`);
@@ -258,9 +260,12 @@ const SPECS = { claude: [claudeSpec, claudeParser], codex: [codexSpec, codexPars
 
 /**
  * Run an agent headless.
- * opts: { prompt, cwd, access: read|write|full, session, model, images, addDirs, timeoutSec, caller, signal, log, onSpawn }
+ * opts: { prompt, cwd, access: read|write|full, session, model, images, addDirs, timeoutSec, caller, signal, log, onSpawn,
+ *         title (thread title for apps that list runs), events (file that receives the raw event stream),
+ *         onSession (called once the agent reports its session/thread id) }
  * → { agent, ok, answer, session_id, limited_until, transient, error, duration_ms, meta }
  */
+const EVENTS_CAP = 50 * 1024 * 1024;
 export async function runAgent(agent, opts) {
   agent = normAgent(agent);
   const a = resolveAgent(agent);
@@ -272,6 +277,8 @@ export async function runAgent(agent, opts) {
   const spec = specFn(o);
   const parser = parserFn(spec);
   o.log?.(`▶ ${LABEL[agent]} (${o.access}${o.session ? `, resume ${o.session.slice(0, 8)}` : ''}) in ${o.cwd}`);
+  let eventBytes = 0;
+  let seenSession = null;
   const r = await run(a.cmd, [...a.pre, ...spec.args], {
     cwd: o.cwd,
     env: childEnv({ [ENV.PARENT]: o.caller || '' }),
@@ -279,7 +286,16 @@ export async function runAgent(agent, opts) {
     timeoutMs: (o.timeoutSec || cfg.default_timeout_sec) * 1000,
     signal: o.signal,
     onSpawn: o.onSpawn,
-    onLine: (l) => parser.line(l, o.log),
+    onLine: (l) => {
+      if (o.events && eventBytes < EVENTS_CAP) {
+        try { fs.appendFileSync(o.events, `${l}\n`); eventBytes += l.length + 1; } catch {}
+      }
+      parser.line(l, o.log);
+      if (o.onSession && parser.st.session && parser.st.session !== seenSession) {
+        seenSession = parser.st.session;
+        try { o.onSession(seenSession); } catch {}
+      }
+    },
   });
   const out = parser.finish(r);
   if (agent === 'codex' && IS_WIN && out.sandboxBroken && o.access !== 'full' && !codexWinSandbox() && !r.aborted) {
