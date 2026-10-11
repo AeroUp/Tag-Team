@@ -9,6 +9,22 @@ import { APP, TITLE, APP_HOME, ROOT, CLI, VERSION } from '../app.mjs';
 export { APP, TITLE, APP_HOME, ROOT, CLI, VERSION };
 export const HOME = os.homedir();
 export const IS_WIN = process.platform === 'win32';
+
+// MSIX Claude sees a virtual AppData path. External CLIs need its physical path.
+export function resolveClaudeDesktopCwd(cwd, { home = HOME, exists = fs.existsSync, packages } = {}) {
+  const win = path.win32;
+  const prefix = win.join(home, 'AppData', 'Roaming', 'Claude');
+  const relative = win.relative(prefix, cwd);
+  if (!relative || relative.startsWith('..') || win.isAbsolute(relative)) return cwd;
+  const root = win.join(home, 'AppData', 'Local', 'Packages');
+  let names = packages;
+  if (!names) { try { names = fs.readdirSync(root); } catch { return cwd; } }
+  for (const name of names.filter((n) => /^Claude_[^\\/]+$/i.test(n))) {
+    const physical = win.join(root, name, 'LocalCache', 'Roaming', 'Claude', relative);
+    if (exists(physical)) return physical;
+  }
+  return cwd;
+}
 // State shared by every tool built on this core (usage limits, concurrency slots, Codex sandbox mode).
 export const SHARED_HOME = process.env.AGENT_STATE_DIR || path.join(HOME, '.agent-state');
 // Environment variables that travel from parent agent to child agent.
@@ -223,22 +239,45 @@ export function toastXml(title, body, { url, actions = [] } = {}) {
   return `<toast${launch}><visual><binding template="ToastGeneric"><text>${xmlEsc(title)}</text><text>${xmlEsc(body)}</text></binding></visual>${buttons ? `<actions>${buttons}</actions>` : ''}</toast>`;
 }
 
+// Claude Desktop and the Codex app run their tools inside an app container. Toasts raised from
+// inside it are silently dropped by Windows, and programs started from inside it (a browser)
+// run against the container's private copy of AppData. Explorer starts things as ordinary
+// desktop processes, so on Windows notifications and links go through it.
+const EXPLORER = path.join(process.env.SystemRoot || process.env.WINDIR || 'C:\\Windows', 'explorer.exe');
+const viaExplorer = (target) => spawn(EXPLORER, [target], { detached: true, stdio: 'ignore', windowsHide: true }).on('error', () => {}).unref();
+
+function runPowerShellOutside(ps) {
+  const dir = ensureDir(path.join(APP_HOME, 'tmp'));
+  try { // leftovers from launches that never ran
+    for (const f of fs.readdirSync(dir)) {
+      if (/^outside-.*\.vbs$/.test(f) && Date.now() - fs.statSync(path.join(dir, f)).mtimeMs > 3600e3) fs.unlinkSync(path.join(dir, f));
+    }
+  } catch {}
+  const vbs = path.join(dir, `outside-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}.vbs`);
+  const enc = Buffer.from(ps, 'utf16le').toString('base64');
+  fs.writeFileSync(vbs, [
+    `CreateObject("WScript.Shell").Run "powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -EncodedCommand ${enc}", 0, False`,
+    'CreateObject("Scripting.FileSystemObject").DeleteFile WScript.ScriptFullName',
+    '',
+  ].join('\r\n'));
+  viaExplorer(vbs);
+}
+
 // Windows toast that stays in the Notification Center. The old NotifyIcon balloon deleted
 // itself after a few seconds, so it vanished unseen whenever Windows muted notifications
 // (e.g. "do not disturb while gaming"). Attributed to Windows PowerShell's registered app id.
 function windowsToast(title, body, opts) {
+  const logFile = path.join(ensureDir(APP_HOME), 'notify.log').replace(/'/g, "''");
   const ps = `$ErrorActionPreference = 'Stop'
+try {
 [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null
 [Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] | Out-Null
 $xml = New-Object Windows.Data.Xml.Dom.XmlDocument
 $xml.LoadXml('${toastXml(title, body, opts).replace(/'/g, "''")}')
 $app = '{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\\WindowsPowerShell\\v1.0\\powershell.exe'
-[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($app).Show([Windows.UI.Notifications.ToastNotification]::new($xml))`;
-  const out = fs.openSync(path.join(ensureDir(APP_HOME), 'notify.log'), 'a');
-  spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-EncodedCommand', Buffer.from(ps, 'utf16le').toString('base64')], {
-    detached: true, stdio: ['ignore', out, out], windowsHide: true,
-  }).unref();
-  fs.closeSync(out);
+[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($app).Show([Windows.UI.Notifications.ToastNotification]::new($xml))
+} catch { Add-Content -LiteralPath '${logFile}' -Value "[$(Get-Date -Format o)] toast failed: $($_.Exception.Message)" }`;
+  runPowerShellOutside(ps);
 }
 
 function discordWebhook(title, body, { url: link } = {}) {
@@ -273,12 +312,12 @@ export function notify(title, body, opts = {}) {
 }
 
 // Open a URL (http(s):// or an app link such as codex://) with the system handler.
+// On Windows it goes through Explorer so the browser or app starts outside any app container.
 export function openUrl(url) {
   if (!/^(https?|codex|claude):\/\/[^\s"<>]+$/i.test(String(url))) return false;
   try {
-    const [cmd, args] = IS_WIN ? ['rundll32.exe', ['url.dll,FileProtocolHandler', url]]
-      : process.platform === 'darwin' ? ['open', [url]] : ['xdg-open', [url]];
-    spawn(cmd, args, { detached: true, stdio: 'ignore', windowsHide: true }).on('error', () => {}).unref();
+    if (IS_WIN) viaExplorer(url);
+    else spawn(process.platform === 'darwin' ? 'open' : 'xdg-open', [url], { detached: true, stdio: 'ignore' }).on('error', () => {}).unref();
     return true;
   } catch {
     return false;

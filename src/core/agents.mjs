@@ -2,7 +2,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { HOME, IS_WIN, APP_HOME, SHARED_HOME, TITLE, ENV, run, which, newestMatch, ensureDir, truncate, readJSON, writeJSON } from './util.mjs';
+import { HOME, IS_WIN, APP_HOME, SHARED_HOME, TITLE, ENV, run, which, newestMatch, ensureDir, truncate, readJSON, writeJSON, resolveClaudeDesktopCwd } from './util.mjs';
 import { loadConfig } from './config.mjs';
 import { classifyFailure, parseResetTime, markLimited, clearLimit, codexUsage } from './limits.mjs';
 
@@ -149,7 +149,13 @@ function claudeParser() {
 // sandbox (still a sandbox) and remember that for every tool on this core.
 const STATE = path.join(SHARED_HOME, 'codex.json');
 const SANDBOX_BROKEN_RE = /setup refresh had errors|helper_unknown_error|Failed to create unified exec process/i;
-const codexWinSandbox = () => (IS_WIN ? readJSON(STATE, {}).codex_windows_sandbox : null);
+// Old unelevated workarounds do not support newer split writable-root policies.
+// Cache a fallback only for the exact CLI binary that required it.
+const codexWinSandbox = () => {
+  if (!IS_WIN) return null;
+  const state = readJSON(STATE, {});
+  return state.codex_sandbox_cli_path === resolveAgent('codex')?.path ? state.codex_windows_sandbox : null;
+};
 
 function codexSpec(o) {
   const lastFile = path.join(ensureDir(path.join(APP_HOME, 'tmp')), `codex-last-${process.pid}-${Date.now()}.txt`);
@@ -271,7 +277,7 @@ export async function runAgent(agent, opts) {
   const a = resolveAgent(agent);
   if (!a) return { agent, ok: false, error: `${LABEL[agent] || agent} CLI not found. ${installHint(agent)}` };
   const cfg = loadConfig();
-  const o = { access: 'read', ...opts, cwd: path.resolve(opts.cwd || process.cwd()), model: opts.model || cfg.agents[agent]?.model };
+  const o = { access: 'read', ...opts, cwd: path.resolve(resolveClaudeDesktopCwd(opts.cwd || process.cwd())), model: opts.model || cfg.agents[agent]?.model };
   if (!fs.existsSync(o.cwd)) return { agent, ok: false, error: `cwd does not exist: ${o.cwd}` };
   const [specFn, parserFn] = SPECS[agent];
   const spec = specFn(o);
@@ -299,7 +305,7 @@ export async function runAgent(agent, opts) {
   });
   const out = parser.finish(r);
   if (agent === 'codex' && IS_WIN && out.sandboxBroken && o.access !== 'full' && !codexWinSandbox() && !r.aborted) {
-    writeJSON(STATE, { ...readJSON(STATE, {}), codex_windows_sandbox: 'unelevated', codex_sandbox_switched_at: new Date().toISOString() });
+    writeJSON(STATE, { ...readJSON(STATE, {}), codex_windows_sandbox: 'unelevated', codex_sandbox_cli_path: a.path, codex_sandbox_switched_at: new Date().toISOString() });
     o.log?.('⚠ Codex\'s elevated Windows sandbox failed to set up; retrying with the unelevated sandbox (remembered for next time)');
     return runAgent(agent, opts);
   }
